@@ -1,10 +1,15 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
-import { MailerService } from '@nestjs-modules/mailer';
+import { getQueueToken } from '@nestjs/bullmq';
 import { createHash } from 'node:crypto';
 import { AuthService } from './auth.service';
 import { PrismaService } from '../prisma/prisma.service';
+import { MAIL_QUEUE, SEND_MAGIC_LINK_EMAIL_JOB } from '../mail/mail.constants';
+
+jest.mock('../prisma/prisma.service', () => ({
+  PrismaService: class PrismaService {},
+}));
 
 describe('登入服務', () => {
   let service: AuthService;
@@ -14,7 +19,7 @@ describe('登入服務', () => {
     $transaction: jest.Mock;
   };
   let jwtService: { signAsync: jest.Mock };
-  let mailerService: { sendMail: jest.Mock };
+  let mailQueue: { add: jest.Mock };
   let configService: { get: jest.Mock; getOrThrow: jest.Mock };
 
   const user = { id: 'user-1', email: 'user@example.com' };
@@ -27,7 +32,7 @@ describe('登入服務', () => {
       $transaction: jest.fn(),
     };
     jwtService = { signAsync: jest.fn().mockResolvedValue('signed.jwt.token') };
-    mailerService = { sendMail: jest.fn().mockResolvedValue(undefined) };
+    mailQueue = { add: jest.fn().mockResolvedValue({ id: 'job-1' }) };
     const values: Record<string, string> = {
       MAGIC_LINK_TTL_MINUTES: '15',
       FRONTEND_URL: 'https://frontend.example',
@@ -42,7 +47,7 @@ describe('登入服務', () => {
         AuthService,
         { provide: PrismaService, useValue: prisma },
         { provide: JwtService, useValue: jwtService },
-        { provide: MailerService, useValue: mailerService },
+        { provide: getQueueToken(MAIL_QUEUE), useValue: mailQueue },
         { provide: ConfigService, useValue: configService },
       ],
     }).compile();
@@ -50,11 +55,11 @@ describe('登入服務', () => {
     service = module.get<AuthService>(AuthService);
   });
 
-  it('建立雜湊後的單次使用 token，並寄送登入郵件與通用回應', async () => {
+  it('建立雜湊後的單次使用 token、將郵件工作加入佇列並回傳通用回應', async () => {
     const response = await service.requestMagicLink(user.email);
     const createCall = prisma.magicLink.create.mock.calls[0][0];
-    const emailHtml: string = mailerService.sendMail.mock.calls[0][0].html;
-    const loginUrl = new URL(emailHtml.match(/href="([^"]+)"/)?.[1] ?? '');
+    const jobData = mailQueue.add.mock.calls[0][1];
+    const loginUrl = new URL(jobData.loginUrl);
     const rawToken = loginUrl.searchParams.get('token');
 
     expect(response).toEqual({
@@ -70,12 +75,11 @@ describe('登入服務', () => {
     );
     expect(JSON.stringify(createCall.data)).not.toContain(rawToken);
     expect(createCall.data.expiresAt.getTime()).toBeGreaterThan(Date.now());
-    expect(mailerService.sendMail).toHaveBeenCalledWith(
-      expect.objectContaining({
-        to: user.email,
-        html: expect.stringContaining('/auth/verify?token='),
-      }),
-    );
+    expect(mailQueue.add).toHaveBeenCalledWith(SEND_MAGIC_LINK_EMAIL_JOB, {
+      recipientEmail: user.email,
+      loginUrl: expect.stringContaining('/auth/verify?token='),
+    });
+    expect(Object.keys(jobData).sort()).toEqual(['loginUrl', 'recipientEmail']);
   });
 
   it('驗證並原子性地使用登入連結、更新最後登入時間，且簽發正確的 JWT payload', async () => {

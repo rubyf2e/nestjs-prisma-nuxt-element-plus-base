@@ -1,0 +1,54 @@
+請依照 `copilot-instructions.md`，將目前 `POST /auth/magic-link` 的同步 Email 寄送改為 BullMQ background job。
+
+### 目標
+
+`POST /auth/magic-link`
+
+→ 建立/取得 User  
+→ 建立 MagicLink  
+→ enqueue mail job  
+→ HTTP response  
+→ Worker 背景寄信
+
+### 現況處理
+
+先確認目前是否已有 BullMQ Mail Queue：
+
+- 若已有：完整重用既有 Queue、job name、Processor、payload format。
+- 若沒有：建立本專案第一套 Mail Queue，作為共用 Mail pipeline，供目前 Magic Link Email 使用。
+
+不得同時建立第二套 Mail Queue。
+
+### 必須維持
+
+不要修改：
+
+- MagicLink token 產生/hash/expiresAt
+- MagicLink DB 寫入
+- 現有 API response
+- `backend/src/auth/templates/magic-link.hbs`
+
+HTTP request 不得等待 SMTP 完成。
+
+Job payload 只包含寄信必要資料，不傳 User entity、Request、Service instance。
+
+Processor 使用現有 `MailerService` + Handlebars template 寄信。
+
+### Tests
+
+至少驗證：
+
+1. API 成功 enqueue job。
+2. job payload 正確。
+3. Processor 能取得 job。
+4. Processor 呼叫 `MailerService`。
+5. 不實際寄送 SMTP，使用 mock/spy。
+
+依 `copilot-instructions.md` 在 Docker Backend container 執行相關 Jest tests、lint、build。
+
+完成後只回報：
+
+1. 修改檔案
+2. Queue / Processor 實作
+3. 測試與結果
+4. 需要手動設定的環境變數

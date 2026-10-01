@@ -1,23 +1,27 @@
 import { createHash, randomBytes } from 'node:crypto';
-import { readFile } from 'node:fs/promises';
 import {
 	Injectable,
 	UnauthorizedException,
 } from '@nestjs/common';
+import { InjectQueue } from '@nestjs/bullmq';
 import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
-import { MailerService } from '@nestjs-modules/mailer';
-import Handlebars from 'handlebars';
-import { join } from 'node:path';
+import type { Queue } from 'bullmq';
 import { PrismaService } from '../prisma/prisma.service';
+import {
+	MAIL_QUEUE,
+	SEND_MAGIC_LINK_EMAIL_JOB,
+	SendMagicLinkEmailJobData,
+} from '../mail/mail.constants';
 
 @Injectable()
 export class AuthService {
 	constructor(
 		private readonly prisma: PrismaService,
 		private readonly jwtService: JwtService,
-		private readonly mailerService: MailerService,
 		private readonly configService: ConfigService,
+		@InjectQueue(MAIL_QUEUE)
+		private readonly mailQueue: Queue<SendMagicLinkEmailJobData>,
 	) {}
 
 	async requestMagicLink(email: string) {
@@ -41,13 +45,10 @@ export class AuthService {
 			.getOrThrow<string>('FRONTEND_URL')
 			.replace(/\/+$/, '');
 		const loginUrl = `${frontendUrl}/auth/verify?token=${encodeURIComponent(token)}`;
-		const template = await readFile(join(__dirname, 'templates', 'magic-link.hbs'), 'utf8');
-		const html = Handlebars.compile(template, { strict: true })({ loginUrl });
 
-		await this.mailerService.sendMail({
-			to: email,
-			subject: 'Your login link',
-			html,
+		await this.mailQueue.add(SEND_MAGIC_LINK_EMAIL_JOB, {
+			recipientEmail: email,
+			loginUrl,
 		});
 
 		return { message: 'If this email can be used, a login link has been sent.' };
