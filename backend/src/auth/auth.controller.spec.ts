@@ -74,7 +74,7 @@ describe('登入 API 控制器', () => {
 
 describe('登入連結 API 的 Queue 整合', () => {
   it('POST 成功後加入只含收件者與登入 URL 的 mail job', async () => {
-    const user = { id: 'user-1', email: 'user@example.com' };
+    const user = { id: 1n, publicId: 'user-public-1', email: 'user@example.com' };
     const prisma = {
       user: { upsert: jest.fn().mockResolvedValue(user) },
       magicLink: { create: jest.fn().mockResolvedValue({}) },

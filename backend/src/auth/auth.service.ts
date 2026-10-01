@@ -79,7 +79,7 @@ export class AuthService {
 			return transaction.user.update({
 				where: { id: magicLink.user.id },
 				data: { lastLoginAt: now },
-				select: { id: true, email: true },
+				select: { publicId: true, email: true },
 			});
 		});
 
@@ -88,10 +88,13 @@ export class AuthService {
 		}
 
 		const accessToken = await this.jwtService.signAsync({
-			userId: user.id,
+			userId: user.publicId,
 			email: user.email,
 		});
 
-		return { accessToken, user };
+		return {
+			accessToken,
+			user: { id: user.publicId, email: user.email },
+		};
 	}
 }

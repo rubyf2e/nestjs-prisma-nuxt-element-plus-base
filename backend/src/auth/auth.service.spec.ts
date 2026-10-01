@@ -22,12 +22,23 @@ describe('登入服務', () => {
   let mailQueue: { add: jest.Mock };
   let configService: { get: jest.Mock; getOrThrow: jest.Mock };
 
-  const user = { id: 'user-1', email: 'user@example.com' };
+  const databaseUser = {
+    id: 1n,
+    publicId: 'user-public-1',
+    email: 'user@example.com',
+  };
+  const responseUser = { id: databaseUser.publicId, email: databaseUser.email };
   const token = 'a'.repeat(64);
 
   beforeEach(async () => {
     prisma = {
-      user: { upsert: jest.fn().mockResolvedValue(user), update: jest.fn().mockResolvedValue(user) },
+      user: {
+        upsert: jest.fn().mockResolvedValue(databaseUser),
+        update: jest.fn().mockResolvedValue({
+          publicId: databaseUser.publicId,
+          email: databaseUser.email,
+        }),
+      },
       magicLink: { create: jest.fn().mockResolvedValue({}) },
       $transaction: jest.fn(),
     };
@@ -56,7 +67,7 @@ describe('登入服務', () => {
   });
 
   it('建立雜湊後的單次使用 token、將郵件工作加入佇列並回傳通用回應', async () => {
-    const response = await service.requestMagicLink(user.email);
+    const response = await service.requestMagicLink(databaseUser.email);
     const createCall = prisma.magicLink.create.mock.calls[0][0];
     const jobData = mailQueue.add.mock.calls[0][1];
     const loginUrl = new URL(jobData.loginUrl);
@@ -66,17 +77,23 @@ describe('登入服務', () => {
       message: 'If this email can be used, a login link has been sent.',
     });
     expect(prisma.user.upsert).toHaveBeenCalledWith({
-      where: { email: user.email },
-      create: { email: user.email },
+      where: { email: databaseUser.email },
+      create: { email: databaseUser.email },
       update: {},
     });
+    expect(createCall.data.userId).toBe(databaseUser.id);
     expect(createCall.data.tokenHash).toBe(
       createHash('sha256').update(rawToken).digest('hex'),
     );
-    expect(JSON.stringify(createCall.data)).not.toContain(rawToken);
+    expect(createCall.data.tokenHash).not.toBe(rawToken);
+    expect(Object.keys(createCall.data).sort()).toEqual([
+      'expiresAt',
+      'tokenHash',
+      'userId',
+    ]);
     expect(createCall.data.expiresAt.getTime()).toBeGreaterThan(Date.now());
     expect(mailQueue.add).toHaveBeenCalledWith(SEND_MAGIC_LINK_EMAIL_JOB, {
-      recipientEmail: user.email,
+      recipientEmail: databaseUser.email,
       loginUrl: expect.stringContaining('/auth/verify?token='),
     });
     expect(Object.keys(jobData).sort()).toEqual(['loginUrl', 'recipientEmail']);
@@ -84,26 +101,33 @@ describe('登入服務', () => {
 
   it('驗證並原子性地使用登入連結、更新最後登入時間，且簽發正確的 JWT payload', async () => {
     const magicLink = {
-      id: 'magic-link-1',
+      id: 1n,
       usedAt: null,
       expiresAt: new Date(Date.now() + 60_000),
-      user,
+      user: databaseUser,
     };
     const transaction = {
       magicLink: {
         findUnique: jest.fn().mockResolvedValue(magicLink),
         updateMany: jest.fn().mockResolvedValue({ count: 1 }),
       },
-      user: { update: jest.fn().mockResolvedValue(user) },
+      user: {
+        update: jest.fn().mockResolvedValue({
+          publicId: databaseUser.publicId,
+          email: databaseUser.email,
+        }),
+      },
     };
     prisma.$transaction.mockImplementation(async (callback: unknown) =>
       (callback as (tx: unknown) => Promise<unknown>)(transaction),
     );
 
-    await expect(service.verifyMagicLink(token)).resolves.toEqual({
+    const response = await service.verifyMagicLink(token);
+    expect(response).toEqual({
       accessToken: 'signed.jwt.token',
-      user,
+      user: responseUser,
     });
+    expect(() => JSON.stringify(response)).not.toThrow();
     expect(transaction.magicLink.findUnique).toHaveBeenCalledWith({
       where: { tokenHash: createHash('sha256').update(token).digest('hex') },
       include: { user: true },
@@ -117,20 +141,20 @@ describe('登入服務', () => {
       data: { usedAt: expect.any(Date) },
     });
     expect(transaction.user.update).toHaveBeenCalledWith({
-      where: { id: user.id },
+      where: { id: databaseUser.id },
       data: { lastLoginAt: expect.any(Date) },
-      select: { id: true, email: true },
+      select: { publicId: true, email: true },
     });
     expect(jwtService.signAsync).toHaveBeenCalledWith({
-      userId: user.id,
-      email: user.email,
+      userId: databaseUser.publicId,
+      email: databaseUser.email,
     });
   });
 
   it.each([
     ['不存在', null],
-    ['已過期', { id: 'magic-link-1', usedAt: null, expiresAt: new Date(0), user }],
-    ['已使用', { id: 'magic-link-1', usedAt: new Date(), expiresAt: new Date(Date.now() + 60_000), user }],
+    ['已過期', { id: 1n, usedAt: null, expiresAt: new Date(0), user: databaseUser }],
+    ['已使用', { id: 1n, usedAt: new Date(), expiresAt: new Date(Date.now() + 60_000), user: databaseUser }],
   ])('拒絕%s的登入連結', async (_case, magicLink) => {
     const transaction = {
       magicLink: {
@@ -154,10 +178,10 @@ describe('登入服務', () => {
     const transaction = {
       magicLink: {
         findUnique: jest.fn().mockResolvedValue({
-          id: 'magic-link-1',
+          id: 1n,
           usedAt: null,
           expiresAt: new Date(Date.now() + 60_000),
-          user,
+          user: databaseUser,
         }),
         updateMany: jest.fn().mockResolvedValue({ count: 0 }),
       },
@@ -179,10 +203,10 @@ describe('登入服務', () => {
     const transaction = {
       magicLink: {
         findUnique: jest.fn().mockResolvedValue({
-          id: 'magic-link-1',
+          id: 1n,
           usedAt: null,
           expiresAt: new Date(Date.now() + 60_000),
-          user,
+          user: databaseUser,
         }),
         updateMany: jest.fn(async () => {
           if (usedAt) {
@@ -192,7 +216,12 @@ describe('登入服務', () => {
           return { count: 1 };
         }),
       },
-      user: { update: jest.fn().mockResolvedValue(user) },
+      user: {
+        update: jest.fn().mockResolvedValue({
+          publicId: databaseUser.publicId,
+          email: databaseUser.email,
+        }),
+      },
     };
     prisma.$transaction.mockImplementation(async (callback: unknown) =>
       (callback as (tx: unknown) => Promise<unknown>)(transaction),
