@@ -1,0 +1,53 @@
+請依照 `copilot-instructions.md`，新增定期清理未使用且已過期 MagicLink 的 Scheduler。
+
+### Cleanup 條件
+
+只刪除：
+
+```text
+usedAt IS NULL
+AND expiresAt < now
+```
+
+使用 Prisma：
+
+```text
+deleteMany()
+```
+
+一次批次刪除，不得逐筆查詢/刪除。
+
+### Scheduler
+
+- 使用目前既有 `@nestjs/schedule`。
+- 使用 `PrismaService`。
+- 使用 `@Cron`。
+- 先確認 `ScheduleModule.forRoot()` 是否已存在，不得重複設定。
+- Scheduler 放在目前架構適合的位置。
+- 回傳 / log 實際刪除筆數。
+- 不建立 HTTP endpoint、Queue、Redis 或 Email 流程。
+- 不修改 AuthService、MagicLink login flow、Prisma schema。
+
+Cron 頻率請依目前專案既有 Scheduler 慣例選擇；若沒有相關慣例，使用合理的固定週期。
+
+### Tests
+
+至少驗證：
+
+1. 過期 + 未使用 → 刪除。
+2. 未過期 + 未使用 → 不刪除。
+3. 過期 + 已使用 → 不由此 cleanup 處理。
+4. `deleteMany()` 使用正確 `where` 條件。
+
+依 `copilot-instructions.md` 在 Docker Backend container 執行：
+
+- Jest tests
+- `npm run lint`
+- `npm run build`
+
+完成後只回報：
+
+1. 修改檔案
+2. Cron 頻率
+3. Cleanup 條件
+4. 測試與結果
