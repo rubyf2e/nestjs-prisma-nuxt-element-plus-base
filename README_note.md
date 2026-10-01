@@ -65,6 +65,9 @@ docker compose down -v
 docker compose exec backend npx prisma migrate dev --name init
 docker compose exec backend npx prisma migrate status
 docker compose exec backend npx prisma generate
+docker compose exec backend npx prisma migrate dev --create-only
+docker compose exec backend npx prisma migrate resolve --rolled-back "20261001185732_fix_user_id"
+docker compose exec backend npx prisma migrate deploy
 
 docker compose exec backend npm install @nestjs/jwt passport-jwt
 
