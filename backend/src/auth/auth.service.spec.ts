@@ -1,18 +1,210 @@
 import { Test, TestingModule } from '@nestjs/testing';
+import { ConfigService } from '@nestjs/config';
+import { JwtService } from '@nestjs/jwt';
+import { MailerService } from '@nestjs-modules/mailer';
+import { createHash } from 'node:crypto';
 import { AuthService } from './auth.service';
+import { PrismaService } from '../prisma/prisma.service';
 
-describe('AuthService', () => {
+describe('登入服務', () => {
   let service: AuthService;
+  let prisma: {
+    user: { upsert: jest.Mock; update: jest.Mock };
+    magicLink: { create: jest.Mock };
+    $transaction: jest.Mock;
+  };
+  let jwtService: { signAsync: jest.Mock };
+  let mailerService: { sendMail: jest.Mock };
+  let configService: { get: jest.Mock; getOrThrow: jest.Mock };
+
+  const user = { id: 'user-1', email: 'user@example.com' };
+  const token = 'a'.repeat(64);
 
   beforeEach(async () => {
+    prisma = {
+      user: { upsert: jest.fn().mockResolvedValue(user), update: jest.fn().mockResolvedValue(user) },
+      magicLink: { create: jest.fn().mockResolvedValue({}) },
+      $transaction: jest.fn(),
+    };
+    jwtService = { signAsync: jest.fn().mockResolvedValue('signed.jwt.token') };
+    mailerService = { sendMail: jest.fn().mockResolvedValue(undefined) };
+    const values: Record<string, string> = {
+      MAGIC_LINK_TTL_MINUTES: '15',
+      FRONTEND_URL: 'https://frontend.example',
+    };
+    configService = {
+      get: jest.fn((key: string) => values[key]),
+      getOrThrow: jest.fn((key: string) => values[key]),
+    };
+
     const module: TestingModule = await Test.createTestingModule({
-      providers: [AuthService],
+      providers: [
+        AuthService,
+        { provide: PrismaService, useValue: prisma },
+        { provide: JwtService, useValue: jwtService },
+        { provide: MailerService, useValue: mailerService },
+        { provide: ConfigService, useValue: configService },
+      ],
     }).compile();
 
     service = module.get<AuthService>(AuthService);
   });
 
-  it('should be defined', () => {
-    expect(service).toBeDefined();
+  it('建立雜湊後的單次使用 token，並寄送登入郵件與通用回應', async () => {
+    const response = await service.requestMagicLink(user.email);
+    const createCall = prisma.magicLink.create.mock.calls[0][0];
+    const emailHtml: string = mailerService.sendMail.mock.calls[0][0].html;
+    const loginUrl = new URL(emailHtml.match(/href="([^"]+)"/)?.[1] ?? '');
+    const rawToken = loginUrl.searchParams.get('token');
+
+    expect(response).toEqual({
+      message: 'If this email can be used, a login link has been sent.',
+    });
+    expect(prisma.user.upsert).toHaveBeenCalledWith({
+      where: { email: user.email },
+      create: { email: user.email },
+      update: {},
+    });
+    expect(createCall.data.tokenHash).toBe(
+      createHash('sha256').update(rawToken).digest('hex'),
+    );
+    expect(JSON.stringify(createCall.data)).not.toContain(rawToken);
+    expect(createCall.data.expiresAt.getTime()).toBeGreaterThan(Date.now());
+    expect(mailerService.sendMail).toHaveBeenCalledWith(
+      expect.objectContaining({
+        to: user.email,
+        html: expect.stringContaining('/auth/verify?token='),
+      }),
+    );
+  });
+
+  it('驗證並原子性地使用登入連結、更新最後登入時間，且簽發正確的 JWT payload', async () => {
+    const magicLink = {
+      id: 'magic-link-1',
+      usedAt: null,
+      expiresAt: new Date(Date.now() + 60_000),
+      user,
+    };
+    const transaction = {
+      magicLink: {
+        findUnique: jest.fn().mockResolvedValue(magicLink),
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+      },
+      user: { update: jest.fn().mockResolvedValue(user) },
+    };
+    prisma.$transaction.mockImplementation(async (callback: unknown) =>
+      (callback as (tx: unknown) => Promise<unknown>)(transaction),
+    );
+
+    await expect(service.verifyMagicLink(token)).resolves.toEqual({
+      accessToken: 'signed.jwt.token',
+      user,
+    });
+    expect(transaction.magicLink.findUnique).toHaveBeenCalledWith({
+      where: { tokenHash: createHash('sha256').update(token).digest('hex') },
+      include: { user: true },
+    });
+    expect(transaction.magicLink.updateMany).toHaveBeenCalledWith({
+      where: {
+        id: magicLink.id,
+        usedAt: null,
+        expiresAt: { gt: expect.any(Date) },
+      },
+      data: { usedAt: expect.any(Date) },
+    });
+    expect(transaction.user.update).toHaveBeenCalledWith({
+      where: { id: user.id },
+      data: { lastLoginAt: expect.any(Date) },
+      select: { id: true, email: true },
+    });
+    expect(jwtService.signAsync).toHaveBeenCalledWith({
+      userId: user.id,
+      email: user.email,
+    });
+  });
+
+  it.each([
+    ['不存在', null],
+    ['已過期', { id: 'magic-link-1', usedAt: null, expiresAt: new Date(0), user }],
+    ['已使用', { id: 'magic-link-1', usedAt: new Date(), expiresAt: new Date(Date.now() + 60_000), user }],
+  ])('拒絕%s的登入連結', async (_case, magicLink) => {
+    const transaction = {
+      magicLink: {
+        findUnique: jest.fn().mockResolvedValue(magicLink),
+        updateMany: jest.fn(),
+      },
+      user: { update: jest.fn() },
+    };
+    prisma.$transaction.mockImplementation(async (callback: unknown) =>
+      (callback as (tx: unknown) => Promise<unknown>)(transaction),
+    );
+
+    await expect(service.verifyMagicLink(token)).rejects.toThrow(
+      'Magic link is invalid, expired, or already used.',
+    );
+    expect(transaction.magicLink.updateMany).not.toHaveBeenCalled();
+    expect(jwtService.signAsync).not.toHaveBeenCalled();
+  });
+
+  it('拒絕已被並發驗證請求領用的登入連結', async () => {
+    const transaction = {
+      magicLink: {
+        findUnique: jest.fn().mockResolvedValue({
+          id: 'magic-link-1',
+          usedAt: null,
+          expiresAt: new Date(Date.now() + 60_000),
+          user,
+        }),
+        updateMany: jest.fn().mockResolvedValue({ count: 0 }),
+      },
+      user: { update: jest.fn() },
+    };
+    prisma.$transaction.mockImplementation(async (callback: unknown) =>
+      (callback as (tx: unknown) => Promise<unknown>)(transaction),
+    );
+
+    await expect(service.verifyMagicLink(token)).rejects.toThrow(
+      'Magic link is invalid, expired, or already used.',
+    );
+    expect(transaction.user.update).not.toHaveBeenCalled();
+    expect(jwtService.signAsync).not.toHaveBeenCalled();
+  });
+
+  it('兩個並發驗證請求中只允許一個使用登入連結', async () => {
+    let usedAt: Date | null = null;
+    const transaction = {
+      magicLink: {
+        findUnique: jest.fn().mockResolvedValue({
+          id: 'magic-link-1',
+          usedAt: null,
+          expiresAt: new Date(Date.now() + 60_000),
+          user,
+        }),
+        updateMany: jest.fn(async () => {
+          if (usedAt) {
+            return { count: 0 };
+          }
+          usedAt = new Date();
+          return { count: 1 };
+        }),
+      },
+      user: { update: jest.fn().mockResolvedValue(user) },
+    };
+    prisma.$transaction.mockImplementation(async (callback: unknown) =>
+      (callback as (tx: unknown) => Promise<unknown>)(transaction),
+    );
+
+    const outcomes = await Promise.allSettled([
+      service.verifyMagicLink(token),
+      service.verifyMagicLink(token),
+    ]);
+
+    expect(outcomes.map((outcome) => outcome.status).sort()).toEqual([
+      'fulfilled',
+      'rejected',
+    ]);
+    expect(transaction.magicLink.updateMany).toHaveBeenCalledTimes(2);
+    expect(transaction.user.update).toHaveBeenCalledTimes(1);
+    expect(jwtService.signAsync).toHaveBeenCalledTimes(1);
   });
 });

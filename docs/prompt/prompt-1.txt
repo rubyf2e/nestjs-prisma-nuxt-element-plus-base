@@ -1,0 +1,94 @@
+請依照 `copilot-instructions.md`，在目前既有 NestJS 專案實作完整 Passwordless Email Login。
+
+### 流程
+
+`Email → User → MagicLink → Email → Verify → usedAt → JWT`
+
+### POST /auth/magic-link
+
+Request：
+
+```json
+{
+  "email": "user@example.com"
+}
+```
+
+需求：
+
+- 驗證 email。
+- User 不存在時建立；存在則沿用。
+- 使用 `crypto.randomBytes()` 產生 cryptographically secure token。
+- DB 只儲存 SHA-256 `tokenHash`，不得儲存原始 token。
+- 設定合理 `expiresAt`。
+- 寄送包含登入 URL 的 Email。
+- Response 不得洩漏 User 是否存在。
+
+### GET /auth/magic-link/verify?token=xxx
+
+需求：
+
+- hash token 後查詢 MagicLink。
+- 驗證 token 存在、未過期、未使用。
+- 成功後將 `usedAt` 設定為目前時間。
+- 更新 `User.lastLoginAt`。
+- 發行 JWT。
+- JWT 至少包含 `userId`、`email`。
+- MagicLink 必須 single-use，並避免 concurrent requests 同時成功。
+
+成功 response：
+
+```json
+{
+  "accessToken": "...",
+  "user": {
+    "id": "...",
+    "email": "..."
+  }
+}
+```
+
+Token 不存在、過期、已使用時，回傳目前 API style 可接受的清楚且一致錯誤。
+
+### JWT
+
+- 使用現有 `@nestjs/jwt`。
+- 使用 `ConfigService` 取得 secret / expiration。
+- 不新增 JWT library。
+- secret 不得寫死。
+
+### Email
+
+- 使用現有 `@nestjs-modules/mailer` / Nodemailer。
+- 使用現有 Handlebars template。
+- Login URL 從 `ConfigService` 的 frontend base URL 取得。
+- 優先沿用目前 Mail / Queue implementation；不要建立第二套。
+
+### 限制
+
+- 先檢查現有 Auth、Prisma、Config、Mailer、Queue 與 tests。
+- 優先重用既有 implementation。
+- 不修改 Prisma schema，除非現有 schema 無法完成需求。
+- 不重新設計 Auth architecture。
+- 不修改無關檔案。
+
+### 驗證
+
+至少驗證：
+
+- request magic link。
+- verify success。
+- invalid / expired / used token。
+- token 不會以原文儲存。
+- MagicLink single-use / concurrent verification。
+- JWT payload。
+- User `lastLoginAt`。
+
+依 `copilot-instructions.md` 在 Docker Backend container 執行相關 tests、lint、build。
+
+完成後只回報：
+
+1. 修改檔案
+2. 實作內容
+3. 驗證指令與結果
+4. 需要手動設定的 `.env`

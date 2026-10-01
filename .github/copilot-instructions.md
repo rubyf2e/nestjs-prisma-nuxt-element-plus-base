@@ -98,6 +98,7 @@
 - DB query：測試關鍵 `where` / query 條件。
 - SMTP、Redis、第三方服務：優先 mock/spy，除非需求要求 integration test。
 - 不修改測試來掩蓋錯誤實作。
+- 測試註解寫中文
 
 ## Validation
 
