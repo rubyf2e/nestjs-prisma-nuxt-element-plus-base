@@ -1,0 +1,211 @@
+{
+  "info": {
+    "name": "RSS Notifier API",
+    "description": "Backend API collection. Set baseUrl and email before running. For the successful magic-link verification request, retrieve the token from the email and set magicLinkToken.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "item": [
+    {
+      "name": "Service",
+      "item": [
+        {
+          "name": "Health check",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('回傳 200', function () {",
+                  "  pm.response.to.have.status(200);",
+                  "});",
+                  "pm.test('回傳服務健康訊息', function () {",
+                  "  pm.expect(pm.response.text()).to.eql('Hello World!');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Passwordless Email Login",
+      "item": [
+        {
+          "name": "Request magic link",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{email}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/auth/magic-link"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('回傳 202 且不揭露帳號是否存在', function () {",
+                  "  pm.response.to.have.status(202);",
+                  "  pm.expect(pm.response.json()).to.eql({ message: 'If this email can be used, a login link has been sent.' });",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Request magic link - invalid email",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"not-an-email\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/auth/magic-link"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('無效 email 回傳 400', function () {",
+                  "  pm.response.to.have.status(400);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Verify magic link - success",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "description": "先呼叫 Request magic link，從收到的 Email 取得 token，填入 collection variable magicLinkToken 後再執行。",
+            "url": "{{baseUrl}}/auth/magic-link/verify?token={{magicLinkToken}}"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('登入成功並回傳 accessToken 與 user', function () {",
+                  "  pm.response.to.have.status(200);",
+                  "  const body = pm.response.json();",
+                  "  pm.expect(body.accessToken).to.be.a('string').and.not.empty;",
+                  "  pm.expect(body.user.id).to.be.a('string').and.not.empty;",
+                  "  pm.expect(body.user.email).to.eql(pm.collectionVariables.get('email'));",
+                  "  pm.collectionVariables.set('accessToken', body.accessToken);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Verify magic link - missing token",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/auth/magic-link/verify"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('缺少 token 回傳 400', function () {",
+                  "  pm.response.to.have.status(400);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Verify magic link - invalid token",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/auth/magic-link/verify?token={{invalidMagicLinkToken}}"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('無效 token 回傳 401 與一致錯誤訊息', function () {",
+                  "  pm.response.to.have.status(401);",
+                  "  pm.expect(pm.response.json().message).to.eql('Magic link is invalid, expired, or already used.');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "http://localhost:3000",
+      "type": "string"
+    },
+    {
+      "key": "email",
+      "value": "user@example.com",
+      "type": "string"
+    },
+    {
+      "key": "magicLinkToken",
+      "value": "replace-with-token-from-email",
+      "type": "string"
+    },
+    {
+      "key": "invalidMagicLinkToken",
+      "value": "invalid-token",
+      "type": "string"
+    },
+    {
+      "key": "accessToken",
+      "value": "",
+      "type": "string"
+    }
+  ]
+}
