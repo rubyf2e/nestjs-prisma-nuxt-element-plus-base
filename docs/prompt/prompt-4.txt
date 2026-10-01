@@ -1,0 +1,63 @@
+請依照 `copilot-instructions.md`，為目前 Backend Scheduler 增加 Docker persistent file logging。
+
+### 需求
+
+每次 Scheduler 執行寫入實體 log，至少包含：
+
+- Scheduler 名稱
+- 開始/結束時間
+- success / failure
+- 執行耗時
+- failure 時的 error message / stack
+
+規則：
+
+- 使用 append，不覆蓋既有 log。
+- Log directory 不存在時自動建立。
+- 寫入失敗不得中斷 Scheduler 或影響 Feed sync。
+- 不記錄 token、密碼、Magic Link、Authorization header 等敏感資料。
+- 若已有 logging / rotation 機制，沿用；沒有 rotation 時不要新增 library。
+- 不寫 PostgreSQL / Redis。
+
+### Docker
+
+先檢查目前：
+
+- Scheduler / logging implementation
+- `backend/Dockerfile`
+- `docker-compose.yml`
+
+確認 runtime WORKDIR、user 權限與路徑後，選擇固定 container log path（例如 `/app/logs`）。
+
+修改 `docker-compose.yml`，以 **named volume** 持久化該 log directory。
+
+只增加必要 volume，不修改其他 service volume、不新增 service、不取代現有 source code / node_modules volume。
+
+### 不得改變
+
+- Scheduler 頻率
+- Scheduler 執行邏輯
+- Feed sync
+- Queue / Email
+- API contract
+- Prisma / DB schema
+
+### 驗證
+
+在 Docker 環境確認：
+
+1. Scheduler 實際產生 log。
+2. 至少兩次執行會 append，不覆蓋。
+3. container restart 後 log 保留。
+4. container recreate 後 log 保留。
+5. `docker compose down` → `up` 後 named volume 中 log 仍保留。
+6. 確認 Docker volume 實際包含 log。
+7. 執行本次修改直接相關的最小必要 tests。
+
+完成後只回報：
+
+1. 修改檔案
+2. 實際 log 路徑
+3. volume 名稱
+4. log 格式範例
+5. 測試/ Docker 驗證結果
